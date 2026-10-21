@@ -1,49 +1,44 @@
 import boto3
 import json
-os_environ = __import__('os').environ
+from typing import Dict, Any
 
-def parse_field_command(command_text: str):
+def parse_field_command(raw_text: str) -> Dict[str, Any]:
     """
-    Simulates sending the raw command to Amazon Bedrock to extract 
-    structured JSON tool-call arguments.
+    Invokes Claude 3.5 Sonnet on Amazon Bedrock via Boto3 to translate
+    unstructured field notes into clean JSON tool parameters.
     """
-    # Initialize the Bedrock Runtime client in your preferred region (e.g., us-east-1)
-    bedrock = boto3.client(
-        service_name='bedrock-runtime',
-        region_name=os_environ.get("AWS_REGION", "us-east-1")
-    )
-    
-    # Using Claude 3.5 Sonnet on Bedrock for precise reasoning
-    model_id = "anthropic.claude-3-5-sonnet-20240620-v1:0"
-    
-    prompt = f"""
-    You are an AI assistant for a field service automation pipeline. 
-    Analyze the following field worker command and extract the action type, target ticket ID, and notes as a clean JSON object:
-    
-    Command: "{command_text}"
-    
-    Return ONLY a JSON response with keys: "action", "ticket_id", and "notes".
-    """
-    
     try:
-        response = bedrock.converse(
-            modelId=model_id,
-            messages=[{
-                "role": "user",
-                "content": [{"text": prompt}]
-            }],
-            inferenceConfig={"maxTokens": 300, "temperature": 0.0}
+        # Initialise standard serverless Bedrock runtime connection client
+        bedrock = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
+        
+        system_prompt = (
+            "You are an Alexa+ enterprise parsing agent. Analyze the user's field text and output "
+            "valid JSON matching this exact layout: "
+            "{\"tool\": \"log_anomaly\" or \"fetch_history\", \"arguments\": {\"node_id\": \"string\", \"severity\": \"string\", \"description\": \"string\"}, \"speech_response\": \"A clear sentence Alexa will speak back to the user\"}"
         )
         
-        # Extract the text response from Bedrock
-        output_text = response['output']['message']['content'][0]['text']
-        return json.loads(output_text)
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 500,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": raw_text}],
+            "temperature": 0.0
+        })
+        
+        response = bedrock.invoke_model(
+            modelId="anthropic.claude-3-5-sonnet-20240620-v1:0", 
+            body=body
+        )
+        
+        response_body = json.loads(response.get("body").read())
+        result_text = response_body["content"][0]["text"]
+        return json.loads(result_text)
         
     except Exception as e:
-        # Fallback simulation if AWS credentials aren't fully configured yet on local machine
-        print(f"AWS Bedrock connection notice: {e}. Returning simulated structured intent for rapid testing.")
+        # Graceful fallback architecture stub for local debugging loops
         return {
-            "action": "update_ticket",
-            "ticket_id": "402",
-            "notes": command_text
+            "status": "error",
+            "tool": "unknown",
+            "arguments": {},
+            "speech_response": f"System connectivity interruption encountered: {str(e)}"
         }

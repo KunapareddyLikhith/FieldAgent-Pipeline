@@ -1,71 +1,64 @@
 import os
-import psycopg2
-from contextlib import contextmanager
+from typing import Dict, Any, List
 
-# You can configure these via environment variables or a local test database string
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_NAME = os.getenv("DB_NAME", "field_agent_db")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
-DB_PORT = os.getenv("DB_PORT", "5432")
+# Local in-memory state tracking to simulate active database persistence
+MOCK_DATABASE: List[Dict[str, Any]] = [
+    {
+        "anomaly_id": 1,
+        "node_id": "Node-04",
+        "severity_level": "High",
+        "description": "Visible hairline fracture on structural load point.",
+        "logged_at": "2026-10-21 14:22:00"
+    }
+]
+counter = 2
 
-@contextmanager
-def get_db_connection():
-    """Context manager for safe PostgreSQL database connections."""
-    conn = None
+def log_anomaly(node_id: str, severity: str, description: str) -> Dict[str, Any]:
+    """Appends an anomaly log entry to the active state."""
+    global counter
+    new_entry = {
+        "anomaly_id": counter,
+        "node_id": node_id or "Unknown-Node",
+        "severity_level": severity or "Medium",
+        "description": description or "No description provided",
+        "logged_at": "2026-10-21 23:30:00"
+    }
+    MOCK_DATABASE.append(new_entry)
+    counter += 1
+    return {"message": "Success", "inserted_id": new_entry["anomaly_id"]}
+
+def fetch_history(node_id: str, **kwargs) -> List[Dict[str, Any]]:
+    """Filters log history by a specific field node identity string."""
+    if not node_id:
+        return MOCK_DATABASE
+    return [entry for entry in MOCK_DATABASE if entry["node_id"].lower() == node_id.lower()]
+
+def execute_db_command(tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Main Execution Router exposed to the API layer.
+    Safely maps structural incoming tool names to target processing handlers.
+    """
     try:
-        conn = psycopg2.connect(
-            host=DB_HOST,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            port=DB_PORT
-        )
-        yield conn
+        if tool_name == "log_anomaly":
+            result = log_anomaly(
+                node_id=tool_args.get("node_id"),
+                severity=tool_args.get("severity"),
+                description=tool_args.get("description")
+            )
+            return {"status": "success", "payload": result}
+            
+        elif tool_name == "fetch_history":
+            result = fetch_history(node_id=tool_args.get("node_id"))
+            return {"status": "success", "payload": result}
+            
+        else:
+            return {
+                "status": "unsupported_tool",
+                "payload": f"The tool target '{tool_name}' is not registered in the pipeline."
+            }
+            
     except Exception as e:
-        print(f"Database connection error: {e}")
-        raise e
-    finally:
-        if conn:
-            conn.close()
-
-def init_db():
-    """Initializes the tickets table if it doesn't already exist."""
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS field_tickets (
-                        ticket_id VARCHAR(50) PRIMARY KEY,
-                        worker_id VARCHAR(50),
-                        action VARCHAR(100),
-                        notes TEXT,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                """)
-                conn.commit()
-        print("Database table 'field_tickets' initialized successfully.")
-    except Exception as e:
-        print(f"Notice: Running in local simulation mode (DB not strictly required for test run): {e}")
-
-def save_ticket_action(worker_id: str, intent_data: dict):
-    """Saves or updates the processed intent data into the PostgreSQL database."""
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO field_tickets (ticket_id, worker_id, action, notes)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (ticket_id) 
-                    DO UPDATE SET action = EXCLUDED.action, notes = EXCLUDED.notes, updated_at = CURRENT_TIMESTAMP;
-                """, (
-                    intent_data.get("ticket_id", "UNKNOWN"),
-                    worker_id,
-                    intent_data.get("action", "general_update"),
-                    intent_data.get("notes", "")
-                ))
-                conn.commit()
-        return True
-    except Exception as e:
-        print(f"Database write skipped/simulated due to missing local PostgreSQL server: {e}")
-        return False
+        return {
+            "status": "database_error",
+            "payload": f"An execution error occurred in the data engine: {str(e)}"
+        }
